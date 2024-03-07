@@ -1,5 +1,0 @@
-URI=https://ismp.crpt.ru/api/v3/lk/documents/create
-TimeUnit=SECONDS
-RequestLimit=5
-TimeOut=20
-Redirect=NEVER
