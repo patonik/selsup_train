@@ -15,10 +15,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Properties;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -77,24 +74,26 @@ final public class ApiClient {
                 method("POST", HttpRequest.BodyPublishers.ofString(doc)).
                 build();
         CompletableFuture<HttpResponse<byte[]>> completableFuture;
+        //acquiring instance lock for limiting API calls per time unit
         synchronized (this) {
             if (requestLimit > 0) {
                 requestCount++;
-                while (releaseTime[(requestCount - 1) % releaseTime.length] > System.currentTimeMillis()) {
+                if (releaseTime[(requestCount - 1) % releaseTime.length] > System.currentTimeMillis()) {
                     long sleepTime = System.currentTimeMillis() - releaseTime[(requestCount - 1) % releaseTime.length];
-                    if (sleepTime > 0) this.wait(sleepTime);
+                    //sleep until permitted time
+                    if (sleepTime > 0) Thread.sleep(sleepTime);
                 }
                 releaseTime[(requestCount - 1) % releaseTime.length] = System.currentTimeMillis() + timeUnit.toMillis(1);
                 if (requestCount > requestLimit) {
                     requestCount = 1;
                 }
-                this.notifyAll();
             }
+            logger.log(Level.INFO, "Requested: " + LocalTime.now() + ", "
+                    + LocalTime.ofInstant(Instant.ofEpochMilli(releaseTime[(requestCount - 1) % releaseTime.length]), ZoneId.systemDefault()) + ", "
+                    + Thread.currentThread().getName() + ", "
+                    + requestCount);
         }
         completableFuture = httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
-        logger.log(Level.INFO, "Requested: " + LocalTime.now() + ", "
-                + LocalTime.ofInstant(Instant.ofEpochMilli(releaseTime[(requestCount - 1) % releaseTime.length]), ZoneId.systemDefault()) + ", "
-                + requestCount);
         return completableFuture;
     }
 
@@ -128,7 +127,7 @@ final public class ApiClient {
 
     public static void main(String[] args) {
         BlockingQueue<Runnable> blockingQueue = new ArrayBlockingQueue<>(40);
-        ExecutorService executorService = new ThreadPoolExecutor(1, 1, 1, TimeUnit.SECONDS, blockingQueue);
+        ExecutorService executorService = new ThreadPoolExecutor(5, 5, 5, TimeUnit.SECONDS, blockingQueue);
         Runnable runnable = () -> {
             List<Product> productList = new ArrayList<>();
             productList.add(Product.newProductBuilder().build());
