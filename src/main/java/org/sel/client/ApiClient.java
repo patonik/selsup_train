@@ -83,7 +83,7 @@ final public class ApiClient {
                     //sleep until permitted time
                     if (sleepTime > 0) Thread.sleep(sleepTime);
                 }
-                releaseTime[(requestCount - 1) % releaseTime.length] = System.currentTimeMillis() + timeUnit.toMillis(1);
+                releaseTime[(requestCount - 1) % releaseTime.length] = System.currentTimeMillis() + timeUnit.toMillis(5);
                 if (requestCount > requestLimit) {
                     requestCount = 1;
                 }
