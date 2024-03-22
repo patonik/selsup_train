@@ -12,9 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalTime;
-import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
@@ -22,20 +20,17 @@ import java.util.logging.Logger;
 
 final public class ApiClient {
     private final TimeUnit timeUnit;
-    private final int requestLimit;
     private final URI uri;
     private final HttpClient httpClient;
     //ApiClient object is used to control throughput.
     private static ApiClient instance;
     private final Logger logger;
-
-    private int requestCount;
-    private final long[] releaseTime;
+    private final Timer timer = new Timer(true);
+    private final Semaphore semaphore;
 
     private ApiClient(TimeUnit timeUnit, int requestLimit, URI uri, HttpClient httpClient) {
         this.timeUnit = timeUnit;
-        this.requestLimit = requestLimit;
-        this.releaseTime = new long[requestLimit];
+        this.semaphore = new Semaphore(requestLimit);
         this.uri = uri;
         this.httpClient = httpClient;
         this.logger = Logger.getAnonymousLogger();
@@ -66,37 +61,6 @@ final public class ApiClient {
                 .build();
     }
 
-    public CompletableFuture<HttpResponse<byte[]>> sendRFDoc(String doc, String ucds) throws IOException, InterruptedException {
-        //For future customization
-        HttpRequest httpRequest = HttpRequest.
-                newBuilder(this.uri).
-                header("accept", "*/*").
-                method("POST", HttpRequest.BodyPublishers.ofString(doc)).
-                build();
-        CompletableFuture<HttpResponse<byte[]>> completableFuture;
-        //acquiring instance lock for limiting API calls per time unit
-        synchronized (this) {
-            if (requestLimit > 0) {
-                requestCount++;
-                if (releaseTime[(requestCount - 1) % releaseTime.length] > System.currentTimeMillis()) {
-                    long sleepTime = System.currentTimeMillis() - releaseTime[(requestCount - 1) % releaseTime.length];
-                    //sleep until permitted time
-                    if (sleepTime > 0) Thread.sleep(sleepTime);
-                }
-                releaseTime[(requestCount - 1) % releaseTime.length] = System.currentTimeMillis() + timeUnit.toMillis(1);
-                if (requestCount > requestLimit) {
-                    requestCount = 1;
-                }
-            }
-            logger.log(Level.INFO, "Requested: " + LocalTime.now() + ", "
-                    + LocalTime.ofInstant(Instant.ofEpochMilli(releaseTime[(requestCount - 1) % releaseTime.length]), ZoneId.systemDefault()) + ", "
-                    + Thread.currentThread().getName() + ", "
-                    + requestCount);
-        }
-        completableFuture = httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
-        return completableFuture;
-    }
-
     public enum MarshallType {
         JSON,
         CSV,
@@ -125,26 +89,64 @@ final public class ApiClient {
         }
     }
 
-    public static void main(String[] args) {
-        BlockingQueue<Runnable> blockingQueue = new ArrayBlockingQueue<>(40);
-        ExecutorService executorService = new ThreadPoolExecutor(5, 5, 5, TimeUnit.SECONDS, blockingQueue);
-        Runnable runnable = () -> {
+    public static void main(String[] args) throws InterruptedException, IOException, ExecutionException {
+        ExecutorService executorService = Executors.newFixedThreadPool(40);
+        List<Callable<CompletableFuture<HttpResponse<byte[]>>>> callableList = new ArrayList<>();
+        for (int i = 0; i < 40; i++) {
+            callableList.add(new ApiTask());
+        }
+        List<Future<CompletableFuture<HttpResponse<byte[]>>>> futureList = executorService.invokeAll(callableList);
+        for (Future<CompletableFuture<HttpResponse<byte[]>>> completableFutureFuture : futureList) {
+            ApiClient.getInstance().logger.log(Level.INFO, completableFutureFuture.get().get().statusCode() + ", " + LocalTime.now());
+        }
+        executorService.shutdown();
+
+    }
+
+    private static class ApiTask implements Callable<CompletableFuture<HttpResponse<byte[]>>> {
+
+        @Override
+        public CompletableFuture<HttpResponse<byte[]>> call() throws Exception {
+            ApiClient apiClient = ApiClient.getInstance();
             List<Product> productList = new ArrayList<>();
             productList.add(Product.newProductBuilder().build());
+            String doc = apiClient
+                    .marshallDoc(MarshallType.JSON, Doc
+                            .newDocBuilder()
+                            .setProducts(productList)
+                            .setDescription("fdfdf")
+                            .build());
+            HttpRequest httpRequest = HttpRequest.
+                    newBuilder(apiClient.uri).
+                    header("accept", "*/*").
+                    method("POST", HttpRequest.BodyPublishers.ofString(Objects.requireNonNull(doc))).
+                    build();
+            apiClient.semaphore.acquire();
+            apiClient.logger.log(Level.INFO, "semaphore acquired by ApiTask, " + Thread.currentThread().getName()
+                    + ": " + LocalTime.now());
+            apiClient.timer.schedule(new ApiTimerTask(), apiClient.timeUnit.toMillis(1));
+            return apiClient.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+        }
+    }
+
+    private static class ApiTimerTask extends TimerTask {
+
+        @Override
+        public void run() {
             ApiClient apiClient;
             try {
                 apiClient = ApiClient.getInstance();
-                String doc = apiClient.marshallDoc(MarshallType.JSON, Doc.newDocBuilder().setProducts(productList).setDescription("fdfdf").build());
-                CompletableFuture<HttpResponse<byte[]>> completableFuture = apiClient.sendRFDoc(doc, "signature");
-                apiClient.logger.log(Level.INFO, completableFuture.get().statusCode() + ", " + LocalTime.now());
-            } catch (IOException | InterruptedException | ExecutionException e) {
+            } catch (IOException e) {
                 throw new RuntimeException(e);
             }
-        };
-
-        for (int i = 0; i < 40; i++) {
-            executorService.execute(runnable);
+            if (apiClient != null) {
+                apiClient.semaphore.release();
+                apiClient.logger.log(Level.INFO
+                        , "semaphore released by TimerTask, "
+                                + Thread.currentThread().getName()
+                                + ": "
+                                + LocalTime.now());
+            }
         }
-        executorService.shutdown();
     }
 }
