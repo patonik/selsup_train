@@ -13,7 +13,7 @@ _public CrptApi(TimeUnit timeUnit, int requestLimit)_
 Реализовать нужно единственный метод – Создание документа для ввода в оборот товара, произведенного в РФ. Документ и подпись должны передаваться в метод в виде Java объекта и строки соответственно.
 
 Вызывается по HTTPS метод POST следующий URL:
-~https://ismp.crpt.ru/api/v3/lk/documents/create~
+_https://ismp.crpt.ru/api/v3/lk/documents/create_
 
 В теле запроса передается в формате JSON документ: 
 ```
